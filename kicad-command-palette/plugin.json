@@ -1,0 +1,21 @@
+{
+    "$schema": "https://go.kicad.org/api/schemas/v1",
+    "identifier": "com.thoma.command-palette",
+    "name": "Command Palette",
+    "description": "Command palette with fuzzy search (Ctrl+P) for all KiCad menu commands.",
+    "runtime": {
+        "type": "python"
+    },
+    "actions": [
+        {
+            "identifier": "start_palette",
+            "name": "Start Command Palette",
+            "description": "Starts the command palette helper. Afterwards Ctrl+P opens the palette in every KiCad window.",
+            "show-button": true,
+            "scopes": ["pcb", "schematic"],
+            "entrypoint": "start_palette.py",
+            "icons-light": ["icons/palette-light.png", "icons/palette-light@2x.png"],
+            "icons-dark": ["icons/palette-dark.png", "icons/palette-dark@2x.png"]
+        }
+    ]
+}

@@ -1,0 +1,2 @@
+# The command palette needs no third-party packages.
+# KiCad only marks a plugin as ready if this file exists.
