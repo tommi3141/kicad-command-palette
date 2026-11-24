@@ -309,7 +309,7 @@ _NAMED_KEYS = {
     "space": 0x20, "del": 0x2E, "delete": 0x2E, "ins": 0x2D, "insert": 0x2D, "backspace": 0x08,
     "tab": 0x09, "enter": 0x0D, "return": 0x0D, "esc": 0x1B, "escape": 0x1B, "home": 0x24,
     "end": 0x23, "pgup": 0x21, "pageup": 0x21, "pgdn": 0x22, "pagedown": 0x22,
-    "left": 0x25, "up": 0x26, "right": 0x27, "down": 0x28,
+    "page up": 0x21, "page down": 0x22, "left": 0x25, "up": 0x26, "right": 0x27, "down": 0x28,
 }
 _EXTENDED = {0x2E, 0x2D, 0x24, 0x23, 0x21, 0x22, 0x25, 0x26, 0x27, 0x28}
 _MOD_VK = {"ctrl": VK_CONTROL, "shift": VK_SHIFT, "alt": VK_MENU} if IS_WIN else {}
@@ -369,6 +369,63 @@ def send_shortcut(shortcut):
     user32.SendInput(len(seq), arr, ctypes.sizeof(INPUT))
 
 
+# Action-name prefixes in user.hotkeys that apply to each editor.
+_HOTKEY_SCOPES = {
+    "pcbnew.exe": ("pcbnew.", "common."),
+    "eeschema.exe": ("eeschema.", "common."),
+    "3dviewer": ("3DViewer.", "common."),
+}
+
+
+def find_hotkey_files():
+    """user.hotkeys files of all KiCad versions, newest first."""
+    import glob
+    cands = []
+    home = os.environ.get("KICAD_CONFIG_HOME")
+    if home:
+        cands += [os.path.join(home, "user.hotkeys")] + glob.glob(os.path.join(home, "*", "user.hotkeys"))
+    appdata = os.environ.get("APPDATA", os.path.join(os.path.expanduser("~"), "AppData", "Roaming"))
+    cands += glob.glob(os.path.join(appdata, "kicad", "*", "user.hotkeys"))
+    cands = [c for c in cands if os.path.isfile(c)]
+    return sorted(cands, key=os.path.getmtime, reverse=True)
+
+
+def humanize_action(name):
+    """'pcbnew.EditorControl.gridNext' -> 'Grid Next'."""
+    import re
+    last = name.rsplit(".", 1)[-1]
+    words = re.sub(r"(?<=[a-z0-9])(?=[A-Z])|[_-]+", " ", last).split()
+    return " ".join(w[:1].upper() + w[1:] for w in words) or name
+
+
+def load_user_hotkeys(editor):
+    """Parse user.hotkeys -> [(label, shortcut)] for the given editor.
+
+    Each line is `action.name<TAB>key<TAB>alt key`; the file lists every action,
+    with empty key fields when unassigned. Those and malformed lines are skipped.
+    """
+    import re
+    scopes = _HOTKEY_SCOPES.get(editor)
+    files = find_hotkey_files()
+    if not scopes or not files:
+        return []
+    out = []
+    try:
+        with open(files[0], encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                name, *keys = [t.strip() for t in re.split(r"\t+|\s{2,}", line) if t.strip()]
+                if keys and name.startswith(scopes):
+                    out.append((humanize_action(name), keys[0]))
+    except OSError as e:
+        log("cannot read %s: %s" % (files[0], e))
+        return []
+    log("user.hotkeys: %d entries for %s from %s" % (len(out), editor, files[0]))
+    return out
+
+
 def load_extra_file():
     """Optional user additions: {"pcbnew.exe": [["Label", "Shortcut"], ...], ...}"""
     try:
@@ -390,24 +447,50 @@ def editor_kind(hwnd):
     buf = ctypes.create_unicode_buffer(512)
     user32.GetWindowTextW(hwnd, buf, 512)
     title = buf.value.lower()
-    if any(w in title for w in ("pcb", "leiterplatte", "platine", "board editor")):
+    if "3d" in title and ("viewer" in title or "betrachter" in title or "ansicht" in title):
+        return "3dviewer"
+    if any(w in title for w in ("pcb", "leiterplatte", "platine", "board editor", "footprint")):
         return "pcbnew.exe"
-    if any(w in title for w in ("schematic", "schaltplan", "schéma", "eeschema")):
+    if any(w in title for w in ("schematic", "schaltplan", "schéma", "eeschema", "symbol")):
         return "eeschema.exe"
     return proc
+
+
+def known_label(editor, label, shortcut):
+    """Prefer the UI wording of a built-in entry on the same key.
+
+    user.hotkeys only has internal action names ('selectConnection'); the UI says
+    'Select/Expand Connection'. Used when all words of the derived label occur in
+    the built-in label, so a remapped key never gets a wrong name.
+    """
+    words = set(label.lower().split())
+    sid = shortcut_id(shortcut)
+    for name, key in EXTRA_COMMANDS.get(editor, []):
+        if shortcut_id(key) == sid and words <= set(name.lower().replace("/", " ").split()):
+            return name
+    return label
 
 
 def add_hotkey_only_commands(hwnd, commands):
     """Append known hotkey-only actions whose shortcut isn't already in the menus."""
     proc = editor_kind(hwnd)
     log("editor kind: %s (process %s)" % (proc, process_name(hwnd)))
-    extra = list(EXTRA_COMMANDS.get(proc, [])) + list(load_extra_file().get(proc, []))
+    from_file = load_user_hotkeys(proc)
+    # user.hotkeys lists every action with its real key, so the built-in defaults
+    # (which can be stale after remapping) are only a fallback without that file.
+    extra = [(known_label(proc, l, k), k, False) for l, k in from_file]
+    extra += [(l, k, True) for l, k in load_extra_file().get(proc, [])]
+    if not from_file:
+        extra += [(l, k, True) for l, k in EXTRA_COMMANDS.get(proc, [])]
     seen = {shortcut_id(c["shortcut"]) for c in commands if c["shortcut"]}
-    for label, shortcut in extra:
+    for label, shortcut, dedupe in extra:
         sid = shortcut_id(shortcut)
         if sid in seen:
             continue
-        seen.add(sid)
+        # a key can belong to several actions (per tool), so only the
+        # built-in/extra lists claim it; the file may list a key repeatedly
+        if dedupe:
+            seen.add(sid)
         commands.append({"label": label, "path": HOTKEY_PATH, "shortcut": shortcut, "id": None})
 
 

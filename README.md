@@ -38,7 +38,9 @@ Zuletzt benutzte Befehle stehen bei leerer Suche oben (`~/.kicad_palette_recent.
 Nur Windows. Reine Toolbar-Buttons ohne Menüeintrag fehlen.
 
 Befehle, die nur einen Hotkey und keinen Menüeintrag haben (z. B. „Select/Expand Connection“ auf `U`),
-stehen in einer eingebauten Liste (Pfad „Hotkey“). Ausführen = Taste wird an den Editor gesendet; dabei
+kommen aus deiner `user.hotkeys` (`%APPDATA%\kicad\<Version>\`, neueste Version, Einträge mit zugewiesener Taste)
+und aus einer eingebauten Liste (Pfad „Hotkey“). Die Namen werden aus dem Aktionsnamen abgeleitet
+(`gridNext` → „Grid Next“). Ausführen = Taste wird an den Editor gesendet; dabei
 zählt die Mausposition im Canvas. Einträge, deren Shortcut schon in einem Menü vorkommt, werden nicht doppelt gezeigt.
 Eigene Ergänzungen (auch bei geänderten Hotkeys) in `~/.kicad_palette_extra.json`:
 
