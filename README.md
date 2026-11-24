@@ -35,7 +35,16 @@ Zuletzt benutzte Befehle stehen bei leerer Suche oben (`~/.kicad_palette_recent.
 
 ## Grenzen
 
-Nur Windows. Nur Menübefehle (reine Toolbar-Buttons ohne Menüeintrag fehlen).
+Nur Windows. Reine Toolbar-Buttons ohne Menüeintrag fehlen.
+
+Befehle, die nur einen Hotkey und keinen Menüeintrag haben (z. B. „Select/Expand Connection“ auf `U`),
+stehen in einer eingebauten Liste (Pfad „Hotkey“). Ausführen = Taste wird an den Editor gesendet; dabei
+zählt die Mausposition im Canvas. Einträge, deren Shortcut schon in einem Menü vorkommt, werden nicht doppelt gezeigt.
+Eigene Ergänzungen (auch bei geänderten Hotkeys) in `~/.kicad_palette_extra.json`:
+
+```json
+{"pcbnew.exe": [["Select/Expand Connection", "U"]], "eeschema.exe": [["Mein Befehl", "Ctrl+Shift+K"]]}
+```
 
 ## Repository-Struktur
 

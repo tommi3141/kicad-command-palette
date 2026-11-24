@@ -22,6 +22,60 @@ RECENT_FILE = os.path.join(os.path.expanduser("~"), ".kicad_palette_recent.json"
 MAX_RECENT = 50
 LOG_FILE = os.path.join(os.environ.get("TEMP", os.path.expanduser("~")), "kicad_palette.log")
 SEP = " › "
+EXTRA_FILE = os.path.join(os.path.expanduser("~"), ".kicad_palette_extra.json")
+HOTKEY_PATH = "Hotkey"
+
+# Actions that only have a hotkey and no menu entry (so the menu walk never sees
+# them). Triggered by sending the key combination to the editor. Entries whose
+# shortcut already exists in the window's menus are skipped at runtime.
+_COMMON_EXTRA = [
+    ("Select/Expand Connection", "U"),
+    ("Move", "M"),
+    ("Drag", "G"),
+    ("Rotate Counterclockwise", "R"),
+    ("Properties", "E"),
+    ("Delete", "Del"),
+    ("Duplicate", "Ctrl+D"),
+    ("Select All", "Ctrl+A"),
+    ("Find", "Ctrl+F"),
+    ("Zoom to Fit", "Home"),
+    ("Zoom In", "F1"),
+    ("Zoom Out", "F2"),
+    ("Redraw", "F3"),
+    ("Zoom to Selection", "Ctrl+Home"),
+]
+EXTRA_COMMANDS = {
+    "pcbnew.exe": _COMMON_EXTRA + [
+        ("Route Single Track", "X"),
+        ("Route Differential Pair", "6"),
+        ("Add Through Via", "V"),
+        ("Drag (45 degree mode)", "D"),
+        ("Flip", "F"),
+        ("Fill All Zones", "B"),
+        ("Unfill All Zones", "Ctrl+B"),
+        ("Switch Track Width to Next", "W"),
+        ("Switch Track Width to Previous", "Shift+W"),
+        ("Switch Track Posture", "/"),
+        ("Select Next Layer", "+"),
+        ("Select Previous Layer", "-"),
+        ("Place Footprint", "O"),
+        ("Reset Local Coordinates", "Space"),
+    ],
+    "eeschema.exe": _COMMON_EXTRA + [
+        ("Mirror Horizontally", "Y"),
+        ("Mirror Vertically", "X"),
+        ("Repeat Last Item", "Insert"),
+        ("Add Symbol", "A"),
+        ("Add Power Symbol", "P"),
+        ("Add Wire", "W"),
+        ("Add Bus", "B"),
+        ("Add Junction", "J"),
+        ("Add Label", "L"),
+        ("Add Hierarchical Label", "H"),
+        ("Add No Connect Flag", "Q"),
+        ("Add Text", "T"),
+    ],
+}
 
 
 def log(msg):
@@ -118,6 +172,7 @@ if IS_WIN:
     user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD)]
     user32.PostMessageW.argtypes = [ctypes.c_void_p, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
     user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
+    user32.GetWindowTextW.argtypes = [ctypes.c_void_p, wintypes.LPWSTR, ctypes.c_int]
     user32.GetParent.argtypes = [ctypes.c_void_p]
     user32.GetParent.restype = ctypes.c_void_p
     user32.SetFocus.argtypes = [ctypes.c_void_p]
@@ -160,6 +215,25 @@ if IS_WIN:
     WM_COMMAND, WM_KEYDOWN, WM_SYSKEYDOWN = 0x111, 0x100, 0x104
     VK_P, VK_SHIFT, VK_CONTROL, VK_MENU = 0x50, 0x10, 0x11, 0x12
     LLKHF_INJECTED = 0x10
+    INPUT_KEYBOARD, KEYEVENTF_KEYUP, KEYEVENTF_EXTENDEDKEY = 1, 0x2, 0x1
+
+    class KEYBDINPUT(ctypes.Structure):
+        _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD),
+                    ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    class MOUSEINPUT(ctypes.Structure):  # only here so the union has the right size
+        _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG), ("mouseData", wintypes.DWORD),
+                    ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    class INPUT(ctypes.Structure):
+        class _U(ctypes.Union):
+            _fields_ = [("ki", KEYBDINPUT), ("mi", MOUSEINPUT)]
+        _anonymous_ = ("u",)
+        _fields_ = [("type", wintypes.DWORD), ("u", _U)]
+
+    user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
+    user32.VkKeyScanW.argtypes = [wintypes.WCHAR]
+    user32.VkKeyScanW.restype = ctypes.c_short
 
 
 def process_name(hwnd):
@@ -229,6 +303,112 @@ def collect_commands(hwnd):
         if sub:
             walk(sub, [buf.value.replace("&", "").strip()])
     return out
+
+
+_NAMED_KEYS = {
+    "space": 0x20, "del": 0x2E, "delete": 0x2E, "ins": 0x2D, "insert": 0x2D, "backspace": 0x08,
+    "tab": 0x09, "enter": 0x0D, "return": 0x0D, "esc": 0x1B, "escape": 0x1B, "home": 0x24,
+    "end": 0x23, "pgup": 0x21, "pageup": 0x21, "pgdn": 0x22, "pagedown": 0x22,
+    "left": 0x25, "up": 0x26, "right": 0x27, "down": 0x28,
+}
+_EXTENDED = {0x2E, 0x2D, 0x24, 0x23, 0x21, 0x22, 0x25, 0x26, 0x27, 0x28}
+_MOD_VK = {"ctrl": VK_CONTROL, "shift": VK_SHIFT, "alt": VK_MENU} if IS_WIN else {}
+
+
+def split_shortcut(shortcut):
+    """'Ctrl+Shift+X' -> (['ctrl', 'shift'], 'x'); handles '+' as the key itself."""
+    s = shortcut.strip()
+    if s.endswith("+"):
+        mods, key = s[:-1].split("+"), "+"
+    else:
+        *mods, key = s.split("+")
+    mods = [m.strip().lower() for m in mods if m.strip()]
+    mods = ["ctrl" if m in ("strg", "control") else m for m in mods]
+    return mods, key.strip()
+
+
+def shortcut_id(shortcut):
+    """Canonical form for comparing shortcuts regardless of modifier order/case."""
+    if not shortcut:
+        return ""
+    mods, key = split_shortcut(shortcut)
+    return "+".join(sorted(set(mods)) + [key.lower()])
+
+
+def send_shortcut(shortcut):
+    """Type a shortcut like 'U' or 'Ctrl+Shift+X' into the focused window."""
+    mods, key = split_shortcut(shortcut)
+    lk = key.lower()
+    if lk in _NAMED_KEYS:
+        vk = _NAMED_KEYS[lk]
+    elif len(lk) > 1 and lk[0] == "f" and lk[1:].isdigit():
+        vk = 0x6F + int(lk[1:])
+    elif len(key) == 1:
+        scan = user32.VkKeyScanW(lk)
+        if scan == -1:
+            log("no key for %r" % shortcut)
+            return
+        vk = scan & 0xFF
+        if scan & 0x100 and "shift" not in mods:
+            mods.append("shift")
+        if scan & 0x200 and "ctrl" not in mods:
+            mods.append("ctrl")
+        if scan & 0x400 and "alt" not in mods:
+            mods.append("alt")
+    else:
+        log("unknown key %r" % shortcut)
+        return
+    seq = [(_MOD_VK[m], 0) for m in mods if m in _MOD_VK]
+    seq.append((vk, KEYEVENTF_EXTENDEDKEY if vk in _EXTENDED else 0))
+    seq += [(v, f | KEYEVENTF_KEYUP) for v, f in reversed(seq)]
+    arr = (INPUT * len(seq))()
+    for i, (v, f) in enumerate(seq):
+        arr[i].type = INPUT_KEYBOARD
+        arr[i].ki.wVk = v
+        arr[i].ki.dwFlags = f
+    user32.SendInput(len(seq), arr, ctypes.sizeof(INPUT))
+
+
+def load_extra_file():
+    """Optional user additions: {"pcbnew.exe": [["Label", "Shortcut"], ...], ...}"""
+    try:
+        with open(EXTRA_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def editor_kind(hwnd):
+    """'pcbnew.exe' / 'eeschema.exe' for the editor in hwnd, else the process name.
+
+    Editors started from the project manager run inside kicad.exe, so the
+    process name alone can't tell them apart; the window title can.
+    """
+    proc = process_name(hwnd)
+    if proc in EXTRA_COMMANDS:
+        return proc
+    buf = ctypes.create_unicode_buffer(512)
+    user32.GetWindowTextW(hwnd, buf, 512)
+    title = buf.value.lower()
+    if any(w in title for w in ("pcb", "leiterplatte", "platine", "board editor")):
+        return "pcbnew.exe"
+    if any(w in title for w in ("schematic", "schaltplan", "schéma", "eeschema")):
+        return "eeschema.exe"
+    return proc
+
+
+def add_hotkey_only_commands(hwnd, commands):
+    """Append known hotkey-only actions whose shortcut isn't already in the menus."""
+    proc = editor_kind(hwnd)
+    log("editor kind: %s (process %s)" % (proc, process_name(hwnd)))
+    extra = list(EXTRA_COMMANDS.get(proc, [])) + list(load_extra_file().get(proc, []))
+    seen = {shortcut_id(c["shortcut"]) for c in commands if c["shortcut"]}
+    for label, shortcut in extra:
+        sid = shortcut_id(shortcut)
+        if sid in seen:
+            continue
+        seen.add(sid)
+        commands.append({"label": label, "path": HOTKEY_PATH, "shortcut": shortcut, "id": None})
 
 
 def force_foreground(hwnd):
@@ -460,6 +640,7 @@ class Palette:
             return
         self.hwnd = hwnd
         self.commands = collect_commands(hwnd)
+        add_hotkey_only_commands(hwnd, self.commands)
         rank = {k: i for i, k in enumerate(self.recent)}
         for c in self.commands:
             c["key"] = c["path"] + SEP + c["label"]
@@ -517,7 +698,10 @@ class Palette:
         hwnd = self.hwnd
         self.close()
         # give KiCad a moment to regain focus before triggering the command
-        self.wx.CallLater(80, lambda: user32.PostMessageW(hwnd, WM_COMMAND, cmd["id"], 0))
+        if cmd["id"] is None:
+            self.wx.CallLater(120, lambda: send_shortcut(cmd["shortcut"]))
+        else:
+            self.wx.CallLater(80, lambda: user32.PostMessageW(hwnd, WM_COMMAND, cmd["id"], 0))
 
 
 def kicad_running():
